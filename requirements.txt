@@ -1,0 +1,10 @@
+numpy
+nibabel
+h5py
+tqdm
+SimpleITK
+nilearn
+pydicom==3.0
+dicom2nifti==2.6.2
+pylibjpeg
+pylibjpeg-libjpeg
