@@ -60,8 +60,8 @@ def process_and_save_dicom(src, dst, study_uid, series_uid, series_desc, series_
         ds.SeriesNumber = int(series_number)
         ds.ProtocolName = series_desc
 
-        pair_id = number  # או לוגיקה לפי XML
-        pair_tag = f"PAIR_{pair_id}"
+        # pairing tag (לא חובה אבל שימושי)
+        pair_tag = f"{modality}_PAIR_{series_number}"
         ds.ImageComments = pair_tag
 
         ds.save_as(dst)
