@@ -119,9 +119,8 @@ def parse_xml(xml_path):
     return series_map
 
 # ---------------------------------------------------------
-# PET ↔ CT matching (לוג בלבד)
+# PET ↔ CT matching
 # ---------------------------------------------------------
-
 def match_pet_to_ct(series_map):
     log_info("\n===== PET ↔ CT MATCHING =====")
 
@@ -132,7 +131,6 @@ def match_pet_to_ct(series_map):
         modality = data["modality"].upper()
         desc = data["description"]
         number = data["number"]
-
         fname = friendly_name(modality, desc, number)
 
         if modality == "CT":
@@ -140,31 +138,98 @@ def match_pet_to_ct(series_map):
         elif modality in ["PT", "PET"]:
             pet_series.append((sid, desc, fname))
 
+    match_map = {}
+
     for sid, desc, fname in pet_series:
         desc_u = desc.upper()
 
+        # AC / MAC → CTAC
         if "MAC" in desc_u or "AC" in desc_u:
             match = [c for c in ct_series if "CTAC" in c[1].upper()]
             if match:
+                match_map[sid] = match[0][0]
                 log_info(f"{fname:<35} → {match[0][2]}")
                 continue
 
+        # WB → WB
         if "WB" in desc_u:
             match = [c for c in ct_series if "WB" in c[1].upper()]
             if match:
+                match_map[sid] = match[0][0]
                 log_info(f"{fname:<35} → {match[0][2]}")
                 continue
 
+        # ONE BED → CT שאינה CTAC
         if "ONE BED" in desc_u:
             match = [c for c in ct_series if "CTAC" not in c[1].upper()]
             if match:
+                match_map[sid] = match[0][0]
                 log_info(f"{fname:<35} → {match[0][2]}")
                 continue
 
+        # otherwise pick first CT
         if ct_series:
+            match_map[sid] = ct_series[0][0]
             log_info(f"{fname:<35} → {ct_series[0][2]}")
         else:
+            match_map[sid] = None
             log_info(f"{fname:<35} → NO MATCH FOUND")
+
+    return match_map
+def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
+    log_info("\n===== APPLYING PET ↔ CT DICOM REFERENCES =====")
+
+    study_folder = os.path.join(output_root, f"Study_{study_uid}")
+
+    for pet_sid, ct_sid in match_map.items():
+        if ct_sid is None:
+            continue
+
+        pet_data = series_map[pet_sid]
+        ct_data = series_map[ct_sid]
+
+        pet_fname = friendly_name("PET", pet_data["description"], pet_data["number"])
+        ct_fname = friendly_name("CT", ct_data["description"], ct_data["number"])
+
+        pet_dir = os.path.join(study_folder, "PET", pet_fname)
+        ct_dir = os.path.join(study_folder, "CT", ct_fname)
+
+        if not os.path.exists(pet_dir) or not os.path.exists(ct_dir):
+            log_warning(f"Missing PET or CT folder for mapping {pet_fname}")
+            continue
+
+        # Load first CT file to get SOPInstanceUID
+        ct_files = [f for f in os.listdir(ct_dir) if f.lower().endswith(".dcm")]
+        if not ct_files:
+            log_warning(f"No CT DICOM files found in {ct_dir}")
+            continue
+
+        ct_first = pydicom.dcmread(os.path.join(ct_dir, ct_files[0]))
+        ct_series_uid = ct_first.SeriesInstanceUID
+        ct_sop_uid = ct_first.SOPInstanceUID
+
+        # Update all PET files
+        pet_files = [f for f in os.listdir(pet_dir) if f.lower().endswith(".dcm")]
+
+        for f in pet_files:
+            path = os.path.join(pet_dir, f)
+            ds = pydicom.dcmread(path)
+
+            # Create referenced series sequence
+            ref_series = pydicom.dataset.Dataset()
+            ref_series.SeriesInstanceUID = ct_series_uid
+
+            # Create referenced image sequence
+            ref_img = pydicom.dataset.Dataset()
+            ref_img.ReferencedSOPClassUID = ct_first.SOPClassUID
+            ref_img.ReferencedSOPInstanceUID = ct_sop_uid
+
+            ref_series.ReferencedImageSequence = [ref_img]
+            ds.ReferencedSeriesSequence = [ref_series]
+
+            ds.save_as(path)
+
+        log_info(f"Added CT reference to PET series: {pet_fname} → {ct_fname}")
 
 # ---------------------------------------------------------
 # Main sorting
@@ -229,8 +294,9 @@ def sort_dicom_from_xml(patient_root, output_root):
                 )
             else:
                 log_warning(f"Missing file: {src}")
-
-    match_pet_to_ct(series_map)
+                
+    match_map = match_pet_to_ct(series_map)
+    apply_pet_ct_references(series_map, output_root, study_uid, match_map)
 
     log_info("DONE! All series sorted successfully.")
     log_info(f"Output folder: {output_root}")
