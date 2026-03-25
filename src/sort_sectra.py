@@ -72,18 +72,29 @@ def process_and_save_dicom(src, dst, study_uid, series_uid, series_desc, series_
 # ---------------------------------------------------------
 # XML
 # ---------------------------------------------------------
-
 def find_xml(patient_root):
-    xml1 = os.path.join(patient_root, "content.xml")
-    xml2 = os.path.join(patient_root, "SECTRA", "content.xml")
+    # Look for any case variation of content.xml
+    candidates = [
+        os.path.join(patient_root, "content.xml"),
+        os.path.join(patient_root, "CONTENT.XML"),
+        os.path.join(patient_root, "Content.xml"),
+        os.path.join(patient_root, "SECTRA", "content.xml"),
+        os.path.join(patient_root, "SECTRA", "CONTENT.XML"),
+        os.path.join(patient_root, "SECTRA", "Content.xml"),
+    ]
 
-    if os.path.exists(xml1):
-        log_info("Found content.xml in patient root")
-        return xml1
+    for path in candidates:
+        if os.path.exists(path):
+            log_info(f"Found XML: {path}")
+            return path
 
-    if os.path.exists(xml2):
-        log_info("Found content.xml inside SECTRA folder")
-        return xml2
+    # Fallback: recursive search
+    for root, dirs, files in os.walk(patient_root):
+        for f in files:
+            if f.lower() == "content.xml":
+                full = os.path.join(root, f)
+                log_info(f"Found XML via recursive search: {full}")
+                return full
 
     log_error("content.xml NOT FOUND")
     return None
