@@ -1,7 +1,21 @@
-"""DICOM PET/CT sorter using Sectra XML metadata.
+"""
+DICOM PET/CT Sorting and Filtering Tool
+---------------------------------------
 
-This module parses Sectra XML export files, selects and processes DICOM series,
-rewrites study/series metadata, and applies PET-to-CT reference links.
+This script processes DICOM data using Sectra XML metadata.
+
+Main capabilities:
+- Parses Sectra XML to extract DICOM series metadata
+- Filters high-quality PET series (removes NAC / QC)
+- Matches PET series with closest diagnostic CT by time
+- Rewrites DICOM tags (StudyUID, SeriesUID, etc.)
+- Organizes output into structured folders
+- Adds PET ↔ CT references inside DICOM headers
+
+Usage:
+    python script.py <input_folder> <output_folder> [--debug]
+
+Use --help for more details.
 """
 
 import os
@@ -60,18 +74,16 @@ def friendly_name(modality, description, number):
 # DICOM processing
 # ---------------------------------------------------------
 def process_and_save_dicom(src, dst, study_uid, series_uid, series_desc, series_number, modality):
-    """Read a DICOM file, update key study and series tags, and save it to the destination."""
+    """Read a DICOM file, update key study/series tags, and save it to the destination path."""
     try:
         ds = pydicom.dcmread(src)
 
-        # --- Fix metadata ---
         ds.StudyInstanceUID = study_uid
         ds.SeriesInstanceUID = series_uid
         ds.SeriesDescription = series_desc
         ds.SeriesNumber = int(series_number)
         ds.ProtocolName = series_desc
 
-        # pairing tag
         pair_tag = f"{modality}_PAIR_{series_number}"
         ds.ImageComments = pair_tag
 
@@ -86,7 +98,7 @@ def process_and_save_dicom(src, dst, study_uid, series_uid, series_desc, series_
 # XML Parsing
 # ---------------------------------------------------------
 def find_xml(patient_root):
-    """Search for Sectra XML metadata files under the given patient root folder."""
+    """Search for Sectra XML metadata files within the patient root folder."""
     candidates = [
         os.path.join(patient_root, "content.xml"),
         os.path.join(patient_root, "CONTENT.XML"),
@@ -112,7 +124,7 @@ def find_xml(patient_root):
     return None
 
 def parse_xml(xml_path):
-    """Parse the Sectra XML file and return a series metadata mapping."""
+    """Parse the Sectra XML file and return a mapping of series metadata and file references."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
@@ -133,7 +145,6 @@ def parse_xml(xml_path):
         desc_node = series.find("series_data/description")
         description = desc_node.text if desc_node is not None else "UNKNOWN"
 
-        # Extract the time from the first image in the series
         series_time = "UNKNOWN"
         first_image = series.find("image")
         if first_image is not None:
@@ -166,11 +177,14 @@ def parse_xml(xml_path):
     return series_map
 
 # ---------------------------------------------------------
-# PET ↔ CT matching
+# Filtering & Matching Logic
 # ---------------------------------------------------------
-def match_pet_to_ct(series_map):
-    """Match PET series to the closest diagnostic CT series by anatomy and acquisition time."""
-    log_info("\n===== SMART PET ↔ CT MATCHING (Anatomy & Time) =====")
+def select_best_pairs(series_map):
+    """Filter PET series for quality and match each selected PET to the best diagnostic CT."""
+    log_info("\n===== FILTERING & SELECTING BEST PAIRS =====")
+    
+    keep_sids = set()
+    match_map = {}
 
     ct_series = []
     pet_series = []
@@ -188,9 +202,18 @@ def match_pet_to_ct(series_map):
         except: 
             return 9999
 
-    match_map = {}
-
+    # 1. Filter PET series - keep only high-quality series
+    good_pets = []
     for pet in pet_series:
+        desc = pet["description"].upper()
+        # Skip non-attenuation-corrected (NAC) and quality control (QC) series
+        if "NAC" in desc or "QC" in desc:
+            log_info(f"[SKIP] Ignored low-quality PET: {pet['description']}")
+            continue
+        good_pets.append(pet)
+
+    # 2. Match PET series to the best diagnostic CT
+    for pet in good_pets:
         pet_sid = pet["sid"]
         pet_desc = pet["description"].upper()
         pet_time = get_minutes(pet["time"])
@@ -204,18 +227,15 @@ def match_pet_to_ct(series_map):
         for ct in ct_series:
             ct_desc = ct["description"].upper()
             
-            # Filter out irrelevant CT series
-            if any(x in ct_desc for x in ["DOSE", "FUSION", "SCREEN", "LUNG"]):
+            # Exclude CTAC, lung, dose report, and other non-diagnostic CT series
+            if any(x in ct_desc for x in ["DOSE", "FUSION", "SCREEN", "LUNG", "CTAC", "MAC", "AC"]):
                 continue
                 
             ct_time = get_minutes(ct["time"])
             time_diff = abs(pet_time - ct_time)
 
-            # Prevent matching WB to OB by limiting the time difference
-            if pet_type == "OB" and time_diff > 30:
-                continue
-            if pet_type == "WB" and time_diff > 45: 
-                continue
+            if pet_type == "OB" and time_diff > 30: continue
+            if pet_type == "WB" and time_diff > 45: continue
 
             if time_diff < min_diff:
                 min_diff = time_diff
@@ -223,16 +243,17 @@ def match_pet_to_ct(series_map):
 
         if best_ct:
             match_map[pet_sid] = best_ct["sid"]
+            keep_sids.add(pet_sid)
+            keep_sids.add(best_ct["sid"])
             ct_fname = friendly_name(best_ct["modality"], best_ct["description"], best_ct["number"])
-            log_info(f"{pet_fname:<35} → {ct_fname} (Diff: {min_diff} min)")
+            log_info(f"[KEEP] Paired: {pet_fname:<35} → {ct_fname} (Diff: {min_diff} min)")
         else:
-            match_map[pet_sid] = None
-            log_info(f"{pet_fname:<35} → NO MATCH FOUND")
+            log_warning(f"Could not find a high-quality CT for PET: {pet_fname}")
 
-    return match_map
+    return keep_sids, match_map
 
 def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
-    """Write PET DICOM files with references to their matched CT series."""
+    """Update PET files with ReferencedSeriesSequence entries pointing to matched CT series."""
     log_info("\n===== APPLYING PET ↔ CT DICOM REFERENCES =====")
 
     study_folder = os.path.join(output_root, f"Study_{study_uid}")
@@ -244,7 +265,6 @@ def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
         pet_data = series_map[pet_sid]
         ct_data = series_map[ct_sid]
 
-        # Use the original modality from XML to avoid missing folders
         pet_fname = friendly_name(pet_data["modality"], pet_data["description"], pet_data["number"])
         ct_fname = friendly_name(ct_data["modality"], ct_data["description"], ct_data["number"])
 
@@ -252,12 +272,12 @@ def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
         ct_dir = os.path.join(study_folder, "CT", ct_fname)
 
         if not os.path.exists(pet_dir) or not os.path.exists(ct_dir):
-            log_warning(f"Missing PET or CT folder for mapping {pet_fname}")
+            log_warning(f"Missing folder for reference mapping: {pet_fname} or {ct_fname}")
             continue
 
         ct_files = [f for f in os.listdir(ct_dir) if os.path.isfile(os.path.join(ct_dir, f))]
         if not ct_files:
-            log_warning(f"No CT DICOM files found in {ct_dir}")
+            log_warning(f"No files found in {ct_dir}")
             continue
 
         ct_first = pydicom.dcmread(os.path.join(ct_dir, ct_files[0]))
@@ -275,15 +295,15 @@ def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
             ds.ReferencedSeriesSequence = [ref_series]
             ds.save_as(path)
 
-        log_info(f"Added CT Series reference to PET series: {pet_fname} → {ct_fname}")
+        log_info(f"Successfully linked: {pet_fname} → {ct_fname}")
 
 # ---------------------------------------------------------
 # Main sorting
 # ---------------------------------------------------------
 
 def sort_dicom_from_xml(patient_root, output_root):
-    """Sort and rewrite DICOM series from Sectra XML metadata into the output folder."""
-    log_info(f"Starting sort for patient folder: {patient_root}")
+    """Process DICOM data from XML metadata and write selected PET/CT series to output."""
+    log_info(f"Starting optimized sort for patient folder: {patient_root}")
 
     xml_path = find_xml(patient_root)
     if xml_path is None:
@@ -296,14 +316,24 @@ def sort_dicom_from_xml(patient_root, output_root):
 
     series_map = parse_xml(xml_path)
 
-    study_uid = generate_uid()
-    log_info(f"Generated Study UID: {study_uid}")
+    keep_sids, match_map = select_best_pairs(series_map)
 
-    total_expected_series = len(series_map)
+    if not keep_sids:
+        log_error("No high-quality PET/CT pairs were found to process. Exiting.")
+        return
+
+    study_uid = generate_uid()
+    log_info(f"\nGenerated Study UID: {study_uid}")
+
     total_expected_slices = 0
     total_processed_slices = 0
 
+    log_info("\n===== PROCESSING SELECTED SERIES =====")
     for sid, data in series_map.items():
+        # Skip any series not in our selected keep list
+        if sid not in keep_sids:
+            continue
+
         modality = data["modality"].upper()
         number = data["number"]
         desc = data["description"]
@@ -326,7 +356,7 @@ def sort_dicom_from_xml(patient_root, output_root):
 
         series_uid = generate_uid()
 
-        log_info(f"--> [SERIES] {fname} | Modality: {modality} | Time: {series_time} | Expected Slices: {expected_slices}")
+        log_info(f"--> [PROCESSING] {fname} | Expected Slices: {expected_slices}")
 
         processed_slices_in_series = 0
         for rel_path in data["files"]:
@@ -344,32 +374,27 @@ def sort_dicom_from_xml(patient_root, output_root):
                 log_warning(f"Missing file: {src}")
         
         if processed_slices_in_series != expected_slices:
-            log_warning(f"    [!] Mismatch in {fname}: Processed {processed_slices_in_series}/{expected_slices} slices.")
+            log_warning(f"    [!] Mismatch: Processed {processed_slices_in_series}/{expected_slices} slices.")
         else:
-            log_info(f"    [V] Completed {fname}: All {expected_slices} slices processed.")
+            log_info(f"    [V] Completed successfully.")
 
-    match_map = match_pet_to_ct(series_map)
     apply_pet_ct_references(series_map, output_root, study_uid, match_map)
 
-    log_info("\n===== PROCESSING SUMMARY =====")
-    log_info(f"Total Series Processed : {total_expected_series}")
-    log_info(f"Total Slices Expected  : {total_expected_slices}")
+    log_info("\n===== FINAL SUMMARY =====")
+    log_info(f"Total Series Selected  : {len(keep_sids)}")
     log_info(f"Total Slices Processed : {total_processed_slices}")
     
     if total_expected_slices > 0 and total_expected_slices == total_processed_slices:
-        log_info("[SUCCESS] ALL data was perfectly converted and saved! No missing slices.")
+        log_info("[SUCCESS] Clean Dataset Generated!")
     else:
-        log_error("[WARNING] There is a mismatch between expected files and processed files. Check logs for missing files.")
-
-    log_info("DONE! All series sorted successfully.")
-    log_info(f"Output folder: {output_root}")
+        log_error("[WARNING] Some selected files were missing during copy.")
 
 # ---------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sort DICOM using Sectra XML")
+    parser = argparse.ArgumentParser(description="Sort & Filter High Quality DICOM using Sectra XML")
     parser.add_argument("input_folder")
     parser.add_argument("output_folder")
     parser.add_argument("--debug", action="store_true")
@@ -381,7 +406,7 @@ if __name__ == "__main__":
     os.makedirs(args.output_folder, exist_ok=True)
     log_path = os.path.join(
         args.output_folder,
-        f"sort_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        f"sort_clean_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     )
     LOG_FILE = open(log_path, "w", encoding="utf-8")
 

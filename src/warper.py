@@ -1,4 +1,4 @@
-""" This code is warper for running the soring from VM of google on the drive dirs"""
+""" This code is possibale warper for running the soring from VM of google on the drive dirs"""
 
 
 import os
