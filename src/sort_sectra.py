@@ -46,15 +46,33 @@ def log_warning(msg):
 # Utility
 # ---------------------------------------------------------
 
-def friendly_name(modality, description, number):
+def friendly_name(modality, description, number, match_tag=""):
     """Generate a cleaned, filesystem-friendly series name from modality and description."""
     desc = (description or "UNKNOWN").upper()
-    desc = desc.replace("PET", "")
-    desc = desc.replace("CT ", "CT_")
+    mod_upper = modality.upper()
+    
+    # Remove redundant modality prefixes to avoid duplication (e.g., CT_CT)
+    if mod_upper in ["PT", "PET"]:
+        desc = re.sub(r'\b(PT|PET)\b', '', desc)
+    elif mod_upper == "CT":
+        desc = re.sub(r'\bCT\b', '', desc)
+        
+    # Avoid duplicate tags like OB_OB if the tag is already present in the description
+    if match_tag:
+        desc = re.sub(rf'\b{match_tag}\b', '', desc)
+
     desc = desc.replace(" ", "_")
     desc = re.sub(r'__+', '_', desc)
     desc = desc.strip("_")
-    return f"{modality.upper()}_{desc}_S{number}"
+    
+    parts = [mod_upper]
+    if match_tag:
+        parts.append(match_tag)
+    if desc:
+        parts.append(desc)
+    parts.append(f"S{number}")
+    
+    return "_".join(parts)
 
 # ---------------------------------------------------------
 # DICOM processing
@@ -169,8 +187,8 @@ def parse_xml(xml_path):
 # PET ↔ CT matching
 # ---------------------------------------------------------
 def match_pet_to_ct(series_map):
-    """Match PET series to the closest diagnostic CT series by anatomy and acquisition time."""
-    log_info("\n===== SMART PET ↔ CT MATCHING (Anatomy & Time) =====")
+    """Match the BEST PET series (by slice count/quality) to the closest diagnostic CT series."""
+    log_info("\n===== SMART PET ↔ CT MATCHING (Anatomy, Time & Quality) =====")
 
     ct_series = []
     pet_series = []
@@ -188,16 +206,37 @@ def match_pet_to_ct(series_map):
         except: 
             return 9999
 
-    match_map = {}
+    # --- 1. Filter and pick the best PET series for OB and WB ---
+    ob_pets = []
+    wb_pets = []
 
     for pet in pet_series:
+        desc = pet["description"].upper()
+        
+        # Filter out non-diagnostic or uncorrected PETs
+        if any(x in desc for x in ["MIP", "NAC", "UNCORRECTED", "NON ATTEN", "SCOUT"]):
+            continue
+            
+        if "ONE BED" in desc or "OB" in desc:
+            ob_pets.append(pet)
+        else:
+            wb_pets.append(pet)
+
+    # Heuristic: Pick the PET with the highest number of slices (highest resolution/full volume)
+    best_ob_pet = max(ob_pets, key=lambda x: len(x["files"])) if ob_pets else None
+    best_wb_pet = max(wb_pets, key=lambda x: len(x["files"])) if wb_pets else None
+
+    selected_pets = []
+    if best_ob_pet: selected_pets.append((best_ob_pet, "OB"))
+    if best_wb_pet: selected_pets.append((best_wb_pet, "WB"))
+
+    match_map = {}
+
+    # --- 2. Match only these champion PETs to a CT ---
+    for pet, pet_type in selected_pets:
         pet_sid = pet["sid"]
-        pet_desc = pet["description"].upper()
         pet_time = get_minutes(pet["time"])
-        pet_fname = friendly_name(pet["modality"], pet["description"], pet["number"])
-
-        pet_type = "OB" if ("ONE BED" in pet_desc or "OB" in pet_desc) else "WB"
-
+        
         best_ct = None
         min_diff = float('inf')
 
@@ -223,11 +262,13 @@ def match_pet_to_ct(series_map):
 
         if best_ct:
             match_map[pet_sid] = best_ct["sid"]
-            ct_fname = friendly_name(best_ct["modality"], best_ct["description"], best_ct["number"])
-            log_info(f"{pet_fname:<35} → {ct_fname} (Diff: {min_diff} min)")
+            ct_fname = friendly_name(best_ct["modality"], best_ct["description"], best_ct["number"], pet_type)
+            pet_fname = friendly_name(pet["modality"], pet["description"], pet["number"], pet_type)
+            log_info(f"BEST {pet_type} PET: {pet_fname:<30} → {ct_fname} (Diff: {min_diff} min)")
         else:
             match_map[pet_sid] = None
-            log_info(f"{pet_fname:<35} → NO MATCH FOUND")
+            pet_fname = friendly_name(pet["modality"], pet["description"], pet["number"])
+            log_info(f"BEST {pet_type} PET: {pet_fname:<30} → NO CT MATCH FOUND")
 
     return match_map
 
@@ -244,12 +285,16 @@ def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
         pet_data = series_map[pet_sid]
         ct_data = series_map[ct_sid]
 
-        # Use the original modality from XML to avoid missing folders
-        pet_fname = friendly_name(pet_data["modality"], pet_data["description"], pet_data["number"])
-        ct_fname = friendly_name(ct_data["modality"], ct_data["description"], ct_data["number"])
+        # Use the match_tag to reconstruct the exact same folder names
+        pet_fname = friendly_name(pet_data["modality"], pet_data["description"], pet_data["number"], pet_data.get("match_tag", ""))
+        ct_fname = friendly_name(ct_data["modality"], ct_data["description"], ct_data["number"], ct_data.get("match_tag", ""))
 
-        pet_dir = os.path.join(study_folder, "PET", pet_fname)
-        ct_dir = os.path.join(study_folder, "CT", ct_fname)
+        # Locate them in their specific target folders (OB, WB, or default PET/CT)
+        pet_target_folder = pet_data.get("target_folder", "PET")
+        ct_target_folder = ct_data.get("target_folder", "CT")
+
+        pet_dir = os.path.join(study_folder, pet_target_folder, pet_fname)
+        ct_dir = os.path.join(study_folder, ct_target_folder, ct_fname)
 
         if not os.path.exists(pet_dir) or not os.path.exists(ct_dir):
             log_warning(f"Missing PET or CT folder for mapping {pet_fname}")
@@ -296,6 +341,22 @@ def sort_dicom_from_xml(patient_root, output_root):
 
     series_map = parse_xml(xml_path)
 
+    # Match the best PETs to CTs early to assign OB/WB tags and determine target folders
+    match_map = match_pet_to_ct(series_map)
+    
+    for pet_sid, ct_sid in match_map.items():
+        if ct_sid:
+            pet_desc = series_map[pet_sid]["description"].upper()
+            pet_type = "OB" if ("ONE BED" in pet_desc or "OB" in pet_desc) else "WB"
+            
+            # Tag both CT and PET with OB/WB so their filenames include it
+            series_map[ct_sid]["match_tag"] = pet_type
+            series_map[pet_sid]["match_tag"] = pet_type
+            
+            # Define the target root folder for these matched series
+            series_map[ct_sid]["target_folder"] = pet_type
+            series_map[pet_sid]["target_folder"] = pet_type
+
     study_uid = generate_uid()
     log_info(f"Generated Study UID: {study_uid}")
 
@@ -308,13 +369,18 @@ def sort_dicom_from_xml(patient_root, output_root):
         number = data["number"]
         desc = data["description"]
         series_time = data.get("time", "UNKNOWN")
+        match_tag = data.get("match_tag", "")
+        target_folder = data.get("target_folder", "")
         
         expected_slices = len(data["files"])
         total_expected_slices += expected_slices
 
-        fname = friendly_name(modality, desc, number)
+        fname = friendly_name(modality, desc, number, match_tag)
 
-        if modality == "CT":
+        # Determine output directory based on matching results
+        if target_folder:
+            mod_folder = target_folder  # OB or WB
+        elif modality == "CT":
             mod_folder = "CT"
         elif modality in ["PT", "PET"]:
             mod_folder = "PET"
@@ -326,7 +392,7 @@ def sort_dicom_from_xml(patient_root, output_root):
 
         series_uid = generate_uid()
 
-        log_info(f"--> [SERIES] {fname} | Modality: {modality} | Time: {series_time} | Expected Slices: {expected_slices}")
+        log_info(f"--> [SERIES] {fname} | Modality: {modality} | Time: {series_time} | Expected Slices: {expected_slices} | Folder: {mod_folder}")
 
         processed_slices_in_series = 0
         for rel_path in data["files"]:
@@ -348,7 +414,6 @@ def sort_dicom_from_xml(patient_root, output_root):
         else:
             log_info(f"    [V] Completed {fname}: All {expected_slices} slices processed.")
 
-    match_map = match_pet_to_ct(series_map)
     apply_pet_ct_references(series_map, output_root, study_uid, match_map)
 
     log_info("\n===== PROCESSING SUMMARY =====")
