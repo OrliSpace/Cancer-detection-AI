@@ -1,6 +1,7 @@
 import os
 import subprocess
 import argparse
+import shutil
 from tqdm import tqdm
 
 def validate_paths(input_root, output_root, script_path):
@@ -31,6 +32,12 @@ def process_folder(script_path, src, dst, debug=False):
 
     try:
         subprocess.run(cmd, check=True)
+        
+        # יצירת חותמת הצלחה רק אם התהליך עבר ללא שגיאות
+        success_file = os.path.join(dst, ".success")
+        with open(success_file, "w") as f:
+            f.write("Processed successfully.")
+            
         return True
     except subprocess.CalledProcessError:
         return False
@@ -73,13 +80,19 @@ def main():
         for folder in tqdm(patient_folders, desc="Processing folders"):
             src = os.path.join(args.input, folder)
             dst = os.path.join(args.output, folder)
+            success_marker = os.path.join(dst, ".success")
 
             log(f"\n=== Processing {folder} ===")
 
-            # Skip folders that have already been processed successfully
-            if os.path.exists(dst) and os.listdir(dst):
-                log("Skipped (already processed)")
+            # בדיקה אמינה - האם קיימת חותמת ההצלחה מהריצה הקודמת?
+            if os.path.exists(success_marker):
+                log("⏩ Skipped (already processed completely)")
                 continue
+            
+            # אם התיקייה קיימת אבל אין חותמת הצלחה (הריצה נכשלה/נעצרה באמצע) - נמחק אותה ונתחיל מחדש
+            if os.path.exists(dst):
+                log("⚠️ Found partially processed data. Cleaning up before retry...")
+                shutil.rmtree(dst)
 
             ok = process_folder(args.script, src, dst, args.debug)
 
