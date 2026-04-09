@@ -7,10 +7,8 @@ from dicom_to_nifti import convert_tree as dicom_to_nifti
 from cw_code.normalize_nifti import normalize_tree
 from cw_code.nifti_to_mha import convert_folder_to_mha
 
+
 class DualLogger:
-    """
-    מחלקה שמנתבת את כל ההדפסות (stdout) גם למסך וגם לקובץ לוג.
-    """
     def __init__(self, filepath):
         self.terminal = sys.stdout
         self.log = open(filepath, "w", encoding="utf-8")
@@ -28,10 +26,6 @@ class DualLogger:
 
 
 def has_dicom_files(directory):
-    """
-    בודקת אם התיקייה מכילה קבצי DICOM.
-    מחזירה True אם נמצאו קבצי .dcm, או אם אין בכלל קבצי .nii/.nii.gz בתיקייה.
-    """
     directory = Path(directory)
     if any(directory.rglob("*.nii.gz")) or any(directory.rglob("*.nii")):
         return False
@@ -39,15 +33,6 @@ def has_dicom_files(directory):
 
 
 def run_pipeline(input_root, output_root):
-    """
-    Full pipeline:
-    1. Convert DICOM → NIfTI (Conditional)
-    2. Normalize NIfTI
-    3. Create temp nnUNet-style output
-    4. Convert nnUNet NIfTI → MHA
-    5. Cleanup ALL temp folders (Normalized NIfTI & nnUNet)
-    """
-
     input_root = Path(input_root)
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -59,7 +44,6 @@ def run_pipeline(input_root, output_root):
     logger = DualLogger(log_path)
     sys.stdout = logger
 
-    # משתנה שיעזור לנו לדעת בסוף התהליך אם ביצענו המרה
     converted_from_dicom = False
 
     try:
@@ -88,40 +72,58 @@ def run_pipeline(input_root, output_root):
         normalized_root = output_root / "nifti_normalized"
         normalize_tree(nifti_root, normalized_root)
 
-        # 3. Build temp nnUNet structure
+        # 3. Build temp nnUNet structure (SMART ID GENERATION)
         print("\n===== STEP 3: BUILDING TEMP NNUNET STRUCTURE =====")
         nnunet_root = output_root / "nnUNet_raw_temp"
         images_dir = nnunet_root / "imagesTr"
         images_dir.mkdir(parents=True, exist_ok=True)
 
-        for study_dir in normalized_root.rglob("*"):
-            if not study_dir.is_dir():
+        # נרוץ על כל תת-התיקיות בכל עומק שהוא כדי למצוא זוגות
+        for scan_dir in normalized_root.rglob("*"):
+            if not scan_dir.is_dir():
                 continue
 
-            ct_files = list(study_dir.glob("*CT*.nii.gz"))
-            pet_files = list(study_dir.glob("*PT*.nii.gz")) + list(study_dir.glob("*PET*.nii.gz"))
+            ct_files = list(scan_dir.glob("*CT*.nii.gz"))
+            pet_files = list(scan_dir.glob("*PT*.nii.gz")) + list(scan_dir.glob("*PET*.nii.gz"))
 
-            if len(ct_files) == 1 and len(pet_files) == 1:
-                patient = study_dir.name.replace(" ", "_")
+            # אם התיקייה הספציפית הזו מכילה גם CT וגם PET, מצאנו סריקה תקינה!
+            if len(ct_files) >= 1 and len(pet_files) >= 1:
+                
+                # חילוץ מזהה המטופל וסוג הסריקה מהנתיב, תוך סינון התיקייה "Study..."
+                try:
+                    relative_parts = scan_dir.relative_to(normalized_root).parts
+                except ValueError:
+                    relative_parts = (scan_dir.name,)
 
-                ct_out = images_dir / f"{patient}_0000.nii.gz"
-                pet_out = images_dir / f"{patient}_0001.nii.gz"
+                name_parts = [p.replace(" ", "_") for p in relative_parts if not p.startswith("Study")]
+                
+                if not name_parts:
+                    final_id = scan_dir.name.replace(" ", "_")
+                else:
+                    # חיבור החלקים (למשל "3129058" ו-"OB") למזהה ייחודי אחד
+                    final_id = "_".join(name_parts)
+
+                ct_out = images_dir / f"{final_id}_0000.nii.gz"
+                pet_out = images_dir / f"{final_id}_0001.nii.gz"
 
                 shutil.copy(ct_files[0], ct_out)
                 shutil.copy(pet_files[0], pet_out)
 
-                print(f"[SUCCESS] Prepared patient for MHA conversion: {patient}")
+                print(f"[SUCCESS] Prepared nnUNet format for: {final_id}")
 
-        # 4. Convert nnUNet NIfTI → MHA
+        # 4. Convert nnUNet NIfTI → MHA (Maintaining nnUNet structure)
         print("\n===== STEP 4: NIFTI → MHA =====")
         mha_root = output_root / "mha_output"
-        convert_folder_to_mha(images_dir, mha_root)
+        mha_images_dir = mha_root / "imagesTr"
+        mha_images_dir.mkdir(parents=True, exist_ok=True)
+        
+        convert_folder_to_mha(images_dir, mha_images_dir)
 
         # 5. Cleanup temp folders
         print("\n===== STEP 5: CLEANUP TEMP FILES =====")
         if nnunet_root.exists():
             shutil.rmtree(nnunet_root)
-            print("Deleted temporary nnUNet folder.")
+            print("Deleted temporary NIfTI nnUNet folder.")
             
         if normalized_root.exists():
             shutil.rmtree(normalized_root)
@@ -147,7 +149,7 @@ def run_pipeline(input_root, output_root):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Full PET/CT preprocessing pipeline (DICOM or NIfTI input)")
+    parser = argparse.ArgumentParser(description="Full PET/CT preprocessing pipeline for nnUNet (MHA output)")
     parser.add_argument("input_root", help="Folder containing raw data (DICOM or NIfTI)")
     parser.add_argument("output_root", help="Folder where processed data will be stored")
 
