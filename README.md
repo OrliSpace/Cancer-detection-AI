@@ -55,4 +55,8 @@ tail -f sorter_log_<job_id>.out
 4. Cancel a running job (if needed):
 ```bash
 scancel <job_id>
-````
+```
+
+## Use Resampling: 
+
+python  .\src\resampling_OB_to_WB.py -i data\nifti -o data\rsmpl
