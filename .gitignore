@@ -1,3 +1,4 @@
 data
 venv
 src\check
+src\__pycache__\
