@@ -1,0 +1,3 @@
+[submodule "models/petct-model"]
+	path = models/petct-model
+	url = https://github.com/OrliSpace/cw-model-edited.git
