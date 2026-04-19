@@ -12,8 +12,8 @@ def interactive_viewer(input_dir, mask_path=None):
   # שם המטופל מהתיקייה
 
     # 1. חיפוש קבצי CT ו-PET
-    ct_patterns = ["*_0000.nii.gz", "case_0000.nii.gz", "CT_norm.nii.gz", "CT_*.nii.gz"]
-    pet_patterns = ["*_0001.nii.gz", "case_0001.nii.gz", "PET_norm.nii.gz", "PT_*.nii.gz"]
+    ct_patterns = ["*_0000.nii.gz", "case_0000.nii.gz", "CT_norm.nii.gz", "CT_*.nii.gz","*_0000.mha"]
+    pet_patterns = ["*_0001.nii.gz", "case_0001.nii.gz", "PET_norm.nii.gz", "PT_*.nii.gz", "*_0001.mha"]
 
     def find_file(patterns):
         for pattern in patterns:
