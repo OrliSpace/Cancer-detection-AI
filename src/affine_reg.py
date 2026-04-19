@@ -7,6 +7,9 @@ from scipy.ndimage import center_of_mass
 import matplotlib.pyplot as plt
 
 
+# -------------------------
+# Utility: find modality
+# -------------------------
 def find_modality_file(folder_path: Path, keywords: list):
     for file in folder_path.glob("*.nii.gz"):
         if any(kw in file.name.upper() for kw in keywords):
@@ -14,6 +17,9 @@ def find_modality_file(folder_path: Path, keywords: list):
     return None
 
 
+# -------------------------
+# Debug function
+# -------------------------
 def run_registration_debug_affine(fixed_wb_ct, warped_ob_ct, output_dir):
     print("\n===== AFFINE REGISTRATION DEBUG (IMPROVED) =====")
 
@@ -41,7 +47,6 @@ def run_registration_debug_affine(fixed_wb_ct, warped_ob_ct, output_dir):
     # -------------------------
     coords = np.argwhere(ob_mask)
     ob_bbox_center = coords.mean(axis=0)
-
     print(f"[OB Center (bbox)] {ob_bbox_center}")
 
     # -------------------------
@@ -79,7 +84,7 @@ def run_registration_debug_affine(fixed_wb_ct, warped_ob_ct, output_dir):
         print("[WARNING] Overlay failed:", e)
 
     # -------------------------
-    # Score (geometry-based)
+    # Score
     # -------------------------
     score = 100
     score -= min(center_dist * 0.5, 50)
@@ -93,26 +98,101 @@ def run_registration_debug_affine(fixed_wb_ct, warped_ob_ct, output_dir):
     return score
 
 
+# -------------------------
+# Main registration function
+# -------------------------
 def register_patient_data_affine(wb_dir, ob_dir, output_dir, debug=False):
+    wb_dir = Path(wb_dir)
+    ob_dir = Path(ob_dir)
+    output_dir = Path(output_dir)
+
+    # -------------------------
+    # Find files
+    # -------------------------
     wb_ct = find_modality_file(wb_dir, ["CT"])
     ob_ct = find_modality_file(ob_dir, ["CT"])
 
+    wb_pet = find_modality_file(wb_dir, ["PT", "PET"])
+    ob_pet = find_modality_file(ob_dir, ["PT", "PET"])
+
     if not wb_ct or not ob_ct:
+        print("❌ Missing CT files")
         return False, None
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fixed = ants.image_read(str(wb_ct))
-    moving = ants.image_read(str(ob_ct))
+    print(f"\n📂 WB CT: {wb_ct}")
+    print(f"📂 OB CT: {ob_ct}")
 
-    reg = ants.registration(fixed=fixed, moving=moving, type_of_transform='Affine')
+    # -------------------------
+    # Load CT
+    # -------------------------
+    fixed_ct = ants.image_read(str(wb_ct))
+    moving_ct = ants.image_read(str(ob_ct))
 
-    warped = ants.apply_transforms(fixed=fixed, moving=moving, transformlist=reg['fwdtransforms'])
+    # -------------------------
+    # Affine registration
+    # -------------------------
+    print("🚀 Running affine registration (CT)...")
 
-    ants.image_write(warped, str(output_dir / "Warped_OB_CT_Affine.nii.gz"))
+    reg = ants.registration(
+        fixed=fixed_ct,
+        moving=moving_ct,
+        type_of_transform='Affine'
+    )
 
+    # -------------------------
+    # Apply to CT
+    # -------------------------
+    warped_ct = ants.apply_transforms(
+        fixed=fixed_ct,
+        moving=moving_ct,
+        transformlist=reg['fwdtransforms'],
+        interpolator='linear'
+    )
+
+    ants.image_write(
+        warped_ct,
+        str(output_dir / "Warped_OB_CT_Affine.nii.gz")
+    )
+
+    print("✅ CT affine done")
+
+    # -------------------------
+    # Apply SAME transforms to PET
+    # -------------------------
+    if wb_pet and ob_pet:
+        print("🧠 Applying transforms to PET...")
+
+        fixed_pet = ants.image_read(str(wb_pet))
+        moving_pet = ants.image_read(str(ob_pet))
+
+        warped_pet = ants.apply_transforms(
+            fixed=fixed_pet,
+            moving=moving_pet,
+            transformlist=reg['fwdtransforms'],
+            interpolator='linear'  # חשוב ל-PET
+        )
+
+        ants.image_write(
+            warped_pet,
+            str(output_dir / "Warped_OB_PET_Affine.nii.gz")
+        )
+
+        print("✅ PET transformed successfully")
+
+    else:
+        print("⚠️ PET not found — skipping")
+
+    # -------------------------
+    # Debug
+    # -------------------------
     score = None
     if debug:
-        score = run_registration_debug_affine(fixed, warped, output_dir)
+        score = run_registration_debug_affine(
+            fixed_ct,
+            warped_ct,
+            output_dir
+        )
 
     return True, score
