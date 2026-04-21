@@ -3,20 +3,19 @@
 #SBATCH --job-name=dicom_sort
 #SBATCH --output=sorter_log_%j.out
 #SBATCH --error=sorter_error_%j.err
-#SBATCH --time=24:00:00
+
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=main
+#SBATCH --partition=generic
 
 # טעינת סביבה (יש לוודא שהגרסה מתאימה למה שמותקן אצלכם)
-module load python/3.10
-source ~/dicom_project/env/bin/activate
-
+module load python
+source /home/dsi/kadoshr5/venvs/nnunet_v1_legacy/bin/activate
 # הגדרת נתיבים
-INPUT_DIR="$HOME/dicom_project/input"
-OUTPUT_DIR="$HOME/dicom_project/output"
-SCRIPT_PATH="$HOME/dicom_project/code/filter_OB_WB.py" # הסקריפט שממיין
-BATCH_RUNNER="$HOME/dicom_project/code/warper.py"      # הסקריפט שעוטף הכל
+INPUT_DIR="/home/dsi/kadoshr5/NIFTI_FINAL_After_Bulk/Bladder 13.11.25"
+OUTPUT_DIR="$HOME/dicom_project/Ordered_DICOM_Samples"
+SCRIPT_PATH="$HOME/order_wraper/sort_sectra.py" # הסקריפט שממיין
+BATCH_RUNNER="$HOME/order_wraper/warper.py"      # הסקריפט שעוטף הכל
 
 echo "Starting DICOM sorting job at $(date)"
 
