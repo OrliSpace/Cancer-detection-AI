@@ -1,3 +1,5 @@
 data
 venv
-src\check
+src/__pycache__/
+monai_server/apps/
+monai_server/dataset/
