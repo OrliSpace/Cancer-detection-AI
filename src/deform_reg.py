@@ -1,21 +1,10 @@
 import os
+import shutil
 import ants
 import numpy as np
 from pathlib import Path
-from tqdm import tqdm
 from scipy.ndimage import center_of_mass
 import matplotlib.pyplot as plt
-
-
-# -------------------------
-# Utility: find modality
-# -------------------------
-def find_modality_file(folder_path: Path, keywords: list):
-    for file in folder_path.glob("*.nii.gz"):
-        if any(kw in file.name.upper() for kw in keywords):
-            return file
-    return None
-
 
 # -------------------------
 # Debug function
@@ -33,18 +22,14 @@ def run_registration_debug_deform(fixed_wb_ct, warped_ob_ct, transforms, output_
         print("🚨 OB too small → failed registration")
         return 0
 
-    # -------------------------
     # Center Distance
-    # -------------------------
     wb_center = np.array(center_of_mass(wb_mask))
     ob_center = np.array(center_of_mass(ob_mask))
 
     center_dist = np.linalg.norm(wb_center - ob_center)
     print(f"[Center Distance] {center_dist:.2f}")
 
-    # -------------------------
     # Slice Overlap
-    # -------------------------
     overlap_slices = 0
     for i in range(wb.shape[0]):
         if np.logical_and(wb_mask[i], ob_mask[i]).sum() > 200:
@@ -52,9 +37,7 @@ def run_registration_debug_deform(fixed_wb_ct, warped_ob_ct, transforms, output_
 
     print(f"[Overlapping slices] {overlap_slices}")
 
-    # -------------------------
     # Jacobian
-    # -------------------------
     jac_penalty = 0
     try:
         jac = ants.create_jacobian_determinant_image(
@@ -74,9 +57,7 @@ def run_registration_debug_deform(fixed_wb_ct, warped_ob_ct, transforms, output_
     except Exception as e:
         print("[WARNING] Jacobian failed:", e)
 
-    # -------------------------
     # Overlay visualization
-    # -------------------------
     try:
         slice_idx = int(ob_center[0])
         plt.figure(figsize=(6, 6))
@@ -92,9 +73,7 @@ def run_registration_debug_deform(fixed_wb_ct, warped_ob_ct, transforms, output_
     except Exception:
         pass
 
-    # -------------------------
     # Score
-    # -------------------------
     score = 100
     score -= min(center_dist * 0.5, 50)
     score += min(overlap_slices, 50) * 0.5
@@ -111,92 +90,62 @@ def run_registration_debug_deform(fixed_wb_ct, warped_ob_ct, transforms, output_
 # -------------------------
 # Main registration function
 # -------------------------
-def register_patient_data_deform(wb_dir, ob_dir, output_dir, debug=False):
-    wb_dir = Path(wb_dir)
-    ob_dir = Path(ob_dir)
+def register_patient_data_deform(fixed_img_path, moving_img_path, output_dir, debug=False):
+    """
+    מבצע רגיסטרציה דפורמבילית בין WB (Fixed) ל-OB (Moving).
+    שומר את קבצי הטרנספורמציה (מתמטיקה) ולא רק את התמונה המעוותת.
+    """
     output_dir = Path(output_dir)
-
-    # -------------------------
-    # Find files
-    # -------------------------
-    wb_ct = find_modality_file(wb_dir, ["CT"])
-    ob_ct = find_modality_file(ob_dir, ["CT"])
-
-    wb_pet = find_modality_file(wb_dir, ["PT", "PET"])
-    ob_pet = find_modality_file(ob_dir, ["PT", "PET"])
-
-    if not wb_ct or not ob_ct:
-        print("❌ Missing CT files")
-        return False, None
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n📂 WB CT: {wb_ct}")
-    print(f"📂 OB CT: {ob_ct}")
+    print(f"\n📂 Fixed CT (WB): {Path(fixed_img_path).name}")
+    print(f"📂 Moving CT (OB): {Path(moving_img_path).name}")
 
-    # -------------------------
-    # Load CT
-    # -------------------------
-    fixed_ct = ants.image_read(str(wb_ct))
-    moving_ct = ants.image_read(str(ob_ct))
+    # 1. טעינת התמונות
+    fixed_ct = ants.image_read(str(fixed_img_path))
+    moving_ct = ants.image_read(str(moving_img_path))
 
-    # -------------------------
-    # Registration (CT)
-    # -------------------------
-    print("🚀 Running deformable registration (CT)...")
-
+    # 2. הרצת הרגיסטרציה
+    print("🚀 Running deformable registration (SyNRA)...")
     reg = ants.registration(
         fixed=fixed_ct,
         moving=moving_ct,
         type_of_transform='SyNRA'
     )
 
-    # -------------------------
-    # Apply to CT
-    # -------------------------
+    # 3. חילוץ ושמירת קבצי הטרנספורמציה (הכי חשוב בשביל השרת!)
+    fwd_transforms = reg['fwdtransforms']
+    
+    for i, transform_path in enumerate(fwd_transforms):
+        file_name = Path(transform_path).name
+        
+        if ".mat" in file_name:
+            final_name = "0GenericAffine.mat"
+        elif "Warp" in file_name:
+            final_name = "1Warp.nii.gz"
+        else:
+            final_name = f"transform_{i}{Path(transform_path).suffix}"
+            
+        destination = output_dir / final_name
+        shutil.copy(transform_path, destination)
+
+    print("✅ Transforms saved successfully")
+
+    # 4. שמירת ה-CT המעוות כדי שתוכלי לראות בעיניים שזה עבד
     warped_ct = ants.apply_transforms(
         fixed=fixed_ct,
         moving=moving_ct,
         transformlist=reg['fwdtransforms'],
         interpolator='linear'
     )
-
+    
     ants.image_write(
         warped_ct,
         str(output_dir / "Warped_OB_CT_Deform.nii.gz")
     )
+    print("✅ Warped CT saved")
 
-    print("✅ CT registration done")
-
-    # -------------------------
-    # Apply SAME transforms to PET
-    # -------------------------
-    if wb_pet and ob_pet:
-        print("🧠 Applying transforms to PET...")
-
-        fixed_pet = ants.image_read(str(wb_pet))
-        moving_pet = ants.image_read(str(ob_pet))
-
-        warped_pet = ants.apply_transforms(
-            fixed=fixed_pet,
-            moving=moving_pet,
-            transformlist=reg['fwdtransforms'],
-            interpolator='linear'  # חשוב ל-PET
-        )
-
-        ants.image_write(
-            warped_pet,
-            str(output_dir / "Warped_OB_PET_Deform.nii.gz")
-        )
-
-        print("✅ PET transformed successfully")
-
-    else:
-        print("⚠️ PET not found — skipping")
-
-    # -------------------------
-    # Debug
-    # -------------------------
+    # 5. דיבאג במקרה הצורך
     score = None
     if debug:
         score = run_registration_debug_deform(
