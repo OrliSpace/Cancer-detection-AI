@@ -2,3 +2,5 @@ data
 venv
 src/__pycache__/*.pyc
 src/cw_code/__pycache__/*.pyc
+monai_server/apps/radiology
+monai_server/dataset
