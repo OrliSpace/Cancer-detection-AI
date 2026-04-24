@@ -1,6 +1,12 @@
 # Cancer-detection-AI
 Graduation project for detecting bladder cancer from CT/PET data using AI  
 ---
+--- 
+
+## Importent Links:
+* data drive:  https://drive.google.com/drive/folders/0ADGtNOeBdU23Uk9PVA
+
+---
 
 ## Project Structure
 
