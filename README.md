@@ -1,11 +1,56 @@
 # Cancer-detection-AI
 Graduation project for detecting bladder cancer from CT/PET data using AI  
 ---
-## Importent links:
-* data: https://drive.google.com/drive/folders/1_oorHW3po19-NoUtq3DRN5STDueI8-e2
+--- 
+
+## Importent Links:
+* data drive:  https://drive.google.com/drive/folders/0ADGtNOeBdU23Uk9PVA
 
 ---
 
+## Project Structure
+
+```
+Cancer-detection-AI/
+│
+├── models/                 # AI models
+│   └── petct-model/        # PET-CT detection model
+│       └── CW-nnU-Net-for-PET-CT/
+│
+├── monai_server/           # MONAI server for medical imaging
+│   ├── apps/              # Radiology applications
+│   └── dataset/           # Dataset configuration
+│       ├── datastore_v2.json
+│       └── labels/        # Label definitions
+│
+├── src/                    # Source code
+│   ├── sort_sectra.py     # Main sorting script for DICOM data
+│   ├── warper.py          # Batch processing wrapper
+│   ├── dicom_to_nifti.py  # DICOM to NIfTI conversion
+│   ├── filter_OB_WB.py    # Filter OB/WB images
+│   ├── viewer.py          # Medical image viewer
+│   └── viewer_photo_save.py
+│
+├── Dockerfile              # Docker container configuration
+├── requirements.txt       # Python dependencies
+└── README.md              # This file
+```
+
+---
+
+## Directory Descriptions
+
+| Directory | Description |
+|-----------|-------------|
+| `data/` | |
+| `logs/` | Application logs, including download logs and processing logs. |
+| `models/` | Trained AI models for cancer detection. Contains PET-CT specific models. |
+| `monai_server/` | MONAI infrastructure for serving medical imaging AI models. |
+| `src/` | Core Python source code for the project - sorting, conversion, and viewing utilities. |
+
+---
+
+## Quick Start
 
 ## running the sort function on one study :
 
