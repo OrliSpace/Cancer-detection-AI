@@ -1,80 +1,79 @@
 🩺 MONAILabel Remote PET/CT Segmentation Guide
+
 This repository provides a step-by-step workflow for connecting a local 3D Slicer instance to a remote GPU-accelerated HPC server at Bar-Ilan University for medical imaging segmentation.
 
 🛠️ Phase 1: Local Installation & Setup
-Before connecting, ensure your local machine has the necessary software:
-
 1. VPN Connection
-Install and connect to the FortiClient VPN using your university credentials.
 
-Stable connectivity is required to maintain the SSH tunnel.
+Install and connect to FortiClient VPN using university credentials.
 
 2. 3D Slicer
-Download and install the Stable Version of 3D Slicer.
 
-Note: Avoid "Preview" versions unless specifically required for compatibility.
+Download: https://download.slicer.org/
+
+Use Stable Version (not preview).
 
 3. MONAILabel Extension
-To install the extension within 3D Slicer:
 
-Open 3D Slicer.
+In 3D Slicer:
 
-Navigate to the Extensions Manager (blue box icon in the toolbar or View -> Extensions Manager).
-
-Search for MONAILabel.
-
-Click Install, then Restart Slicer when prompted.
-
+Extensions Manager → Search: MONAILabel
+Install → Restart Slicer
 🚀 Phase 2: Remote Server Configuration (HPC)
-1. Resource Allocation
-Connect to the Login node and request a GPU-enabled compute node:
-
-Bash
-# Connect to the Login node
+1. Login + GPU Node
 ssh <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il
 
-# Request a GPU node (e.g., L4 partition for 4 hours)
+Then request compute node:
+
 srun --pty -c 4 --mem=16G --gres=gpu:1 --partition=L4-4h bash
-Important: Note the assigned node name in your terminal prompt (e.g., hpc8l4-01). This is your <NODE_NAME>.
 
-2. Start the MONAILabel Server
-Once inside the compute node, initialize the environment and start the service:
+After this you will see something like:
 
-Bash
-# Navigate to the project directory
+hpc8l4-01
+
+This is your COMPUTE NODE.
+
+2. Start MONAILabel Server (on compute node)
 cd /home/dsi/<YOUR_USERNAME>/dicom_project/
 
-# Activate the virtual environment
 source ~/venvs/nnunet_v1_legacy/bin/activate
 
-# Launch the MONAILabel server
-monailabel start_server --app apps/radiology --studies /home/dsi/<YOUR_USERNAME>/dicom_project/OB_NIFTI_FIXED --conf models deepedit
-Wait for the log: Uvicorn running on [http://0.0.0.0:8000](http://0.0.0.0:8000).
+monailabel start_server \
+  --app apps/radiology \
+  --studies /home/dsi/<YOUR_USERNAME>/dicom_project/OB_NIFTI_FIXED \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --conf models deepedit
 
-🌉 Phase 3: The ProxyJump Connection (Local PC)
-Due to internal network routing restrictions, we use a ProxyJump to bridge your local PC and the compute node.
+Wait until you see:
 
-Open a New PowerShell window on your local Windows machine.
+Uvicorn running on http://0.0.0.0:8000
+🌉 Phase 3: SSH Tunnel (Local Machine)
 
-Execute the following command:
+Open NEW PowerShell on your PC:
 
-PowerShell
-# Replace placeholders with your specific details
-ssh -J <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il -L 9007:localhost:8000 <YOUR_USERNAME>@<NODE_NAME>
--J: Uses the login node as a jump host.
+ssh -J <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il ^
+-L 9007:localhost:8000 ^
+<YOUR_USERNAME>@hpc8l4-01
 
--L: Maps your local port 9007 to the server's port 8000.
+⚠️ Replace hpc8l4-01 with your actual compute node if different.
 
-Keep this window open. Closing it will terminate the connection to Slicer.
+Keep this window open.
 
-🖥️ Phase 4: Connecting 3D Slicer
-In 3D Slicer, switch to the MONAILabel module.
+🖥️ Phase 4: 3D Slicer Connection
 
-In the MONAI Label server field, manually type:
-[http://127.0.0.1:9007](http://127.0.0.1:9007)
+In MONAILabel module inside Slicer:
 
-Click the Refresh button (circular arrows).
+http://127.0.0.1:9007
 
-The App Name (e.g., MONAILabel - Radiology) and Models should populate automatically.
+Then:
 
-Click Next Sample to load the first PET/CT volume for labeling.
+Click Refresh
+Load model
+Click Next Sample
+🆘 Troubleshooting
+Issue	Fix
+Address already in use	Change port 9007 → 9008 everywhere
+No route to host	Wrong compute node or VPN disconnected
+Connection refused	Server not running or wrong port
+Slicer not connecting	Rebuild SSH tunnel
