@@ -1,6 +1,3 @@
-This is a professional, left-aligned `README.md` designed for high readability and "copy-paste" efficiency. It incorporates the specific **ProxyJump** method that successfully bypassed the network routing issues.
-
----
 
 # 🩺 MONAILabel Remote PET/CT Segmentation Guide
 
@@ -12,7 +9,7 @@ This guide provides a standardized workflow for connecting a local **3D Slicer**
 
 Before starting, ensure the following setup is completed on your local machine:
 
-*   **VPN Connection**: Connect to the **FortiClient VPN** using your university credentials.
+*   **VPN Connection**: Connect to the **FortiClient VPN** using your university credentials. 
 *   **3D Slicer**: Install the [Stable Version](https://download.slicer.org/) of 3D Slicer.
 *   **MONAILabel Extension**:
     1.  Open **3D Slicer**.
@@ -30,7 +27,7 @@ Connect to the Login node and request a compute node with a GPU.
 # 1. Connect to the Login node
 ssh <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il
 
-# 2. Request a GPU node (Example: L4 partition)
+# 2. Request a GPU node (Example: L4 partition)- need to be changed when have the exact gpu usage
 srun --pty -c 4 --mem=16G --gres=gpu:1 --partition=L4-4h bash
 ```
 
@@ -74,11 +71,12 @@ ssh -J <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il -L 9007:localhost:8000 <YOUR_U
 ## 🖥️ Step 4: Connect 3D Slicer
 
 1.  Open **3D Slicer** and select the **MONAILabel** module.
-2.  In the **MONAI Label server** field, paste:
-    `[http://127.0.0.1:9007](http://127.0.0.1:9007)`
-3.  Click the **Refresh** button (circular arrows).
-4.  Verify that **App Name** and **Models** are populated.
-5.  Click **Next Sample** to start labeling.
+2.  In the **MONAI Label server** field, paste one of the above:
+    `http://127.0.0.1:9007`
+    `http://127.0.0.1:9007`
+4.  Click the **Refresh** button (circular arrows).
+5.  Verify that **App Name** and **Models** are populated.
+6.  Click **Next Sample** to start labeling.
 
 ---
 
@@ -95,4 +93,4 @@ ssh -J <YOUR_USERNAME>@slurm-login2.lnx.biu.ac.il -L 9007:localhost:8000 <YOUR_U
     *   Do not include brackets `[]` or spaces in the Slicer server field.
 
 ---
-*Developed for the Bar-Ilan University CS Excellence Program.*</NODE_NAME></NODE_NAME>
+*Developed for the Bar-Ilan University CS Excellence Program by Roei Kadosh
