@@ -3,3 +3,5 @@ venv
 src/__pycache__
 monai_server/apps/
 monai_server/dataset/
+monai_server/MONAILabel
+monai_server/.env
