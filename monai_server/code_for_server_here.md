@@ -26,3 +26,7 @@ Here is the complete list of files we have modified or added to the MONAI Label 
   - Configures Window/Level for both images.
   - Sets up a composite view with 0.5 opacity for the foreground (PET).
   - Adds a keyboard shortcut (`p`) to toggle the PET overlay's visibility.
+
+
+  running the server : in conda: 
+  monailabel start_server --app radiology --studies dataset --conf models segmentation

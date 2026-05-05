@@ -180,3 +180,15 @@
 [2026-05-04 12:22:22,648] [20928] [MainThread] [INFO] (timeloop:63) - Timeloop now started. Jobs will run based on the interval set
 [2026-05-04 12:23:26,554] [20928] [MainThread] [INFO] (monailabel.endpoints.activelearning:44) - Active Learning Request: {'strategy': 'random', 'client_id': 'user-xyz'}
 [2026-05-04 12:23:26,562] [20928] [MainThread] [INFO] (monailabel.endpoints.activelearning:60) - Next sample: {'id': '31020402_CT', 'path': 'C:\\Users\\ELAL\\Desktop\\projects\\Cancer-detection-AI\\monai_server\\dataset\\31020402_CT.nii.gz', 'ts': 1777796552, 'name': '31020402_CT.nii.gz', 'strategy': {'random': {'ts': 1777886606, 'client_id': 'user-xyz'}}}
+[2026-05-05 12:07:11,210] [25968] [MainThread] [INFO] (monailabel.interfaces.utils.app:36) - Initializing App from: C:\Users\ELAL\Desktop\projects\Cancer-detection-AI\monai_server\radiology; studies: C:\Users\ELAL\Desktop\projects\Cancer-detection-AI\monai_server\dataset; conf: {'models': 'segmentation'}
+[2026-05-05 12:07:11,329] [25968] [MainThread] [INFO] (monailabel.utils.others.class_utils:57) - Subclass for MONAILabelApp Found: <class 'main.MyApp'>
+[2026-05-05 12:07:11,756] [25968] [MainThread] [INFO] (monailabel.interfaces.app:139) - Init Datastore for: C:\Users\ELAL\Desktop\projects\Cancer-detection-AI\monai_server\dataset
+[2026-05-05 12:07:11,757] [25968] [MainThread] [INFO] (monailabel.datastore.local:130) - Auto Reload: True; Extensions: ['*.nii.gz', '*.nii', '*.nrrd', '*.jpg', '*.png', '*.tif', '*.svs', '*.xml']
+[2026-05-05 12:07:11,788] [25968] [MainThread] [INFO] (monailabel.datastore.local:577) - Invalidate count: 0
+[2026-05-05 12:07:11,789] [25968] [MainThread] [INFO] (monailabel.datastore.local:151) - Start observing external modifications on datastore (AUTO RELOAD)
+[2026-05-05 12:07:11,795] [25968] [MainThread] [INFO] (monailabel.utils.sessions:51) - Session Path: C:\Users\ELAL\.cache\monailabel\sessions
+[2026-05-05 12:07:11,796] [25968] [MainThread] [INFO] (monailabel.utils.sessions:52) - Session Expiry (max): 3600
+[2026-05-05 12:07:11,796] [25968] [MainThread] [INFO] (monailabel.interfaces.app:480) - App Init - completed
+[2026-05-05 12:07:11,798] [25968] [MainThread] [INFO] (timeloop:60) - Starting Timeloop..
+[2026-05-05 12:07:11,798] [25968] [MainThread] [INFO] (timeloop:42) - Registered job <function MONAILabelApp.on_init_complete.<locals>.run_scheduler at 0x0000021DBBF065F0>
+[2026-05-05 12:07:11,798] [25968] [MainThread] [INFO] (timeloop:63) - Timeloop now started. Jobs will run based on the interval set
