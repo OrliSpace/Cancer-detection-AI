@@ -24,17 +24,13 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
 
     def loadNextUntaggedPatient(self, base_dicom_dir, base_info_dir):
-        import os
-        import slicer
-        from DICOMLib import DICOMUtils
-
+        """מוצאת את המטופל הבא שטרם תויג וטוענת אותו"""
         if not os.path.exists(base_dicom_dir):
             return None
 
         if not os.path.exists(base_info_dir):
             os.makedirs(base_info_dir)
 
-        # איתור המטופל הבא שטרם תויג (לפי היעדר קובץ .seg.nrrd)
         patient_ids = [d for d in os.listdir(base_dicom_dir) if os.path.isdir(os.path.join(base_dicom_dir, d))]
         patient_to_load = None
 
@@ -51,15 +47,55 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
         if not patient_to_load:
             return None
 
+        return self.loadSpecificPatient(patient_to_load, base_dicom_dir, base_info_dir)
+
+    def loadSpecificPatient(self, patient_id, base_dicom_dir, base_info_dir):
+        """טוענת מטופל ספציפי ומחפשת נתוני עבר (JSON וסגמנטציה)"""
+        import slicer
+        from DICOMLib import DICOMUtils
+
+        patient_dir = os.path.join(base_dicom_dir, patient_id)
+        if not os.path.exists(patient_dir):
+            print(f"Error: Patient {patient_id} not found in DICOM directory.")
+            return None
+
+        patient_info_dir = os.path.join(base_info_dir, patient_id)
+        if not os.path.exists(patient_info_dir):
+            os.makedirs(patient_info_dir)
+
         slicer.mrmlScene.Clear(0)
 
-        # ניווט לתיקיית ה-OB
-        patient_dir = os.path.join(base_dicom_dir, patient_to_load)
+        # -------------------------------------------------------------
+        # בדיקה וטעינה של נתוני עבר (JSON + NRRD) במידה וקיימים
+        # -------------------------------------------------------------
+        clinical_data = None
+        existing_seg_node = None
+        
+        json_path = os.path.join(patient_info_dir, "info.json")
+        seg_path = os.path.join(patient_info_dir, f"{patient_id}_seg.seg.nrrd")
+
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    clinical_data = json.load(f)
+                print(f"Loaded existing clinical data for {patient_id}.")
+            except Exception as e:
+                print(f"Failed to load existing JSON: {e}")
+
+        if os.path.exists(seg_path):
+            try:
+                existing_seg_node = slicer.util.loadSegmentation(seg_path)
+                print(f"Loaded existing segmentation for {patient_id}.")
+            except Exception as e:
+                print(f"Failed to load existing Segmentation: {e}")
+        # -------------------------------------------------------------
+
+        # ניווט לתיקיית ה-OB וטעינת ה-DICOM
         study_dirs = [d for d in os.listdir(patient_dir) if d.startswith("Study")]
         if not study_dirs: return None
         ob_dir = os.path.join(patient_dir, study_dirs[0], "OB")
+        if not os.path.exists(ob_dir): return None
 
-        # שימוש במסד נתונים זמני לטעינת ה-DICOM ללא סיומות
         original_db_path = slicer.dicomDatabase.databaseDirectory
         temp_db_dir = os.path.join(slicer.app.temporaryPath, "TempDICOMDB")
         if not os.path.exists(temp_db_dir): os.makedirs(temp_db_dir)
@@ -77,7 +113,6 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
                     if not files: continue
                     modality = db.fileValue(files[0], "0008,0060")
                     
-                    # התיקון שהוכנס: מניעת טעינת סדרות חלקיות/Scout של CT
                     if modality == "CT":
                         if not ct_series or len(files) > len(db.filesForSeries(ct_series)):
                             ct_series = series
@@ -98,7 +133,7 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
         if original_db_path:
             DICOMUtils.openDatabase(original_db_path)
             
-        # הגדרת תצוגת PET חזקה ו-CT ברקע
+        # הגדרת תצוגת PET ו-CT
         if ct_node and pt_node:
             if not pt_node.GetDisplayNode():
                 pt_node.CreateDefaultDisplayNodes()
@@ -111,11 +146,11 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
                 display_node.AutoWindowLevelOff()
                 display_node.SetWindowLevel(10000, 6000)
 
-            # שקיפות 20% (0.2)
             slicer.util.setSliceViewerLayers(background=ct_node, foreground=pt_node, foregroundOpacity=0.2)
             slicer.util.resetSliceViews()
 
-        return patient_to_load, ct_node, pt_node
+        # עכשיו מחזירים גם את הנתונים הקיימים (אם יש) ל-GUI
+        return patient_id, ct_node, pt_node, clinical_data, existing_seg_node
 
     def savePatientData(self, patient_id, clinical_data, segmentation_node, output_base_dir):
         """שומרת את המידע הקליני והסגמנטציה לתיקיית המטופל"""
@@ -127,22 +162,18 @@ class PatientTaggerLogic(ScriptedLoadableModuleLogic):
         if not os.path.exists(patient_output_dir):
             os.makedirs(patient_output_dir)
 
-        # 1. שמירת המידע הקליני ל-JSON
         json_path = os.path.join(patient_output_dir, "info.json")
         try:
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(clinical_data, f, indent=4, ensure_ascii=False)
-            print(f"Clinical data saved to: {json_path}")
         except Exception as e:
             print(f"Failed to save JSON: {e}")
             return False
 
-        # 2. שמירת הסגמנטציה ל-NRRD
         if segmentation_node:
             seg_path = os.path.join(patient_output_dir, f"{patient_id}_seg.seg.nrrd")
             try:
                 slicer.util.saveNode(segmentation_node, seg_path)
-                print(f"Segmentation saved to: {seg_path}")
             except Exception as e:
                 print(f"Failed to save Segmentation: {e}")
                 return False
@@ -161,7 +192,6 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
 
-        # ---Configuration---
         settingsCollapsibleButton = ctk.ctkCollapsibleButton()
         settingsCollapsibleButton.text = "Configuration"
         self.layout.addWidget(settingsCollapsibleButton)
@@ -177,18 +207,24 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if savedInfoDir: self.infoDirSelector.directory = savedInfoDir
         settingsFormLayout.addRow("Data Info Output Dir:", self.infoDirSelector)
 
-        # ---Load---
-        self.loadButton = qt.QPushButton("1. Load Next Patient")
-        self.loadButton.setStyleSheet("font-weight: bold; padding: 10px; height: 40px;")
+        self.loadButton = qt.QPushButton("1. Load Next Untagged Patient")
+        self.loadButton.setStyleSheet("font-weight: bold; padding: 10px; height: 30px;")
         self.layout.addWidget(self.loadButton)
 
-        # ---תווית מזהה מטופל---
+        specificLoadLayout = qt.QHBoxLayout()
+        self.specificIdInput = qt.QLineEdit()
+        self.specificIdInput.setPlaceholderText("Enter Patient ID (e.g. 30977820)...")
+        self.loadSpecificButton = qt.QPushButton("Load Specific ID")
+        self.loadSpecificButton.setStyleSheet("font-weight: bold; padding: 5px;")
+        specificLoadLayout.addWidget(self.specificIdInput)
+        specificLoadLayout.addWidget(self.loadSpecificButton)
+        self.layout.addLayout(specificLoadLayout)
+
         self.patientIdLabel = qt.QLabel("Active Patient: None")
         self.patientIdLabel.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50; margin: 10px 0px;")
         self.patientIdLabel.setAlignment(qt.Qt.AlignCenter)
         self.layout.addWidget(self.patientIdLabel)
 
-        # ---Clinical Data---
         parametersCollapsibleButton = ctk.ctkCollapsibleButton()
         parametersCollapsibleButton.text = "Patient Clinical Data"
         self.layout.addWidget(parametersCollapsibleButton)
@@ -214,7 +250,6 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.notesInput = qt.QTextEdit()
         parametersFormLayout.addRow("Notes:", self.notesInput)
 
-        # ---Segmentation Tools (Embedded)---
         self.segmentationCollapsibleButton = ctk.ctkCollapsibleButton()
         self.segmentationCollapsibleButton.text = "2. Active Segmentation"
         self.segmentationCollapsibleButton.collapsed = True 
@@ -229,7 +264,6 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.segmentEditorWidget.setSourceVolumeNodeSelectorVisible(False)
         segmentationLayout.addWidget(self.segmentEditorWidget)
 
-        # ---Save---
         self.saveButton = qt.QPushButton("3. Save Data & Finish Patient")
         self.saveButton.setStyleSheet("font-weight: bold; padding: 10px; background-color: #4CAF50; color: white;")
         self.saveButton.enabled = False 
@@ -237,8 +271,8 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.layout.addStretch(1)
 
-        # חיבורים
-        self.loadButton.connect('clicked(bool)', self.onLoadClicked)
+        self.loadButton.connect('clicked(bool)', self.onLoadNextClicked)
+        self.loadSpecificButton.connect('clicked(bool)', self.onLoadSpecificClicked)
         self.saveButton.connect('clicked(bool)', self.onSaveClicked)
         self.dicomDirSelector.connect('directoryChanged(const QString&)', 
                                       lambda d: slicer.app.settings().setValue("PatientTagger/DicomDir", d))
@@ -247,49 +281,94 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.logic = PatientTaggerLogic()
 
-    def onLoadClicked(self):
+    def _setupLoadedPatientUI(self, loaded_id, ct_node, pt_node, clinical_data, existing_seg_node):
+        """פונקציה שמעדכנת את המסך לאחר טעינה, ומשחזרת נתונים קיימים אם יש"""
+        self.current_patient_id = loaded_id
+        
+        self.patientIdLabel.setText(f"Active Patient: {self.current_patient_id}")
+        self.patientIdLabel.setStyleSheet("font-size: 14px; font-weight: bold; color: #e67e22; margin: 10px 0px;")
+
+        # =========================================================
+        # 1. טעינת מידע קליני לתיבות הטקסט (אם יש)
+        # =========================================================
+        if clinical_data:
+            self.heightInput.value = clinical_data.get("height_cm", 0.0)
+            self.weightInput.value = clinical_data.get("weight_kg", 0.0)
+            tumor_type = clinical_data.get("tumor_type", "Unknown")
+            type_index = self.tumorTypeInput.findText(tumor_type)
+            if type_index >= 0:
+                self.tumorTypeInput.currentIndex = type_index
+            self.diseaseInput.setText(clinical_data.get("background_diseases", ""))
+            self.notesInput.setPlainText(clinical_data.get("notes", ""))
+        else:
+            # איפוס במידה ומדובר בחולה נקי
+            self.heightInput.value = 0.0
+            self.weightInput.value = 0.0
+            self.tumorTypeInput.currentIndex = 0
+            self.diseaseInput.clear()
+            self.notesInput.clear()
+
+        # =========================================================
+        # 2. אתחול עורך הסגמנטציה וטעינת הציור הקודם (אם יש)
+        # =========================================================
+        new_editor_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
+        self.segmentEditorWidget.setMRMLSegmentEditorNode(new_editor_node)
+        
+        if existing_seg_node:
+            segmentationNode = existing_seg_node
+            # אין צורך להוסיף סגמנט חדש, כי טענו את הקובץ הקיים!
+        else:
+            segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+            segmentationNode.SetName(f"{self.current_patient_id}_Segmentation")
+            if ct_node:
+                segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(ct_node)
+            # אם זה חולה חדש לגמרי, יוצרים עבורו את ה-"Tumor" הראשון
+            segmentationNode.GetSegmentation().AddEmptySegment("Tumor", "Tumor", [0, 1, 0])
+        
+        self.segmentEditorWidget.setSegmentationNode(segmentationNode)
+        source_node = pt_node if pt_node else ct_node
+        self.segmentEditorWidget.setSourceVolumeNode(source_node)
+        
+        self.segmentationCollapsibleButton.collapsed = False
+        self.saveButton.enabled = True
+
+    def onLoadNextClicked(self):
         base_dicom_dir = self.dicomDirSelector.directory
         base_info_dir = self.infoDirSelector.directory
-        
         if not base_dicom_dir or not base_info_dir:
              qt.QMessageBox.warning(slicer.util.mainWindow(), "Missing Paths", "Please select directories.")
              return
 
         result = self.logic.loadNextUntaggedPatient(base_dicom_dir, base_info_dir)
-        
         if result:
-            self.current_patient_id, ct_node, pt_node = result
-            
-            # עדכון התצוגה של המזהה
-            self.patientIdLabel.setText(f"Active Patient: {self.current_patient_id}")
-            self.patientIdLabel.setStyleSheet("font-size: 14px; font-weight: bold; color: #e67e22; margin: 10px 0px;")
-
-            # אתחול עורך הסגמנטציה
-            new_editor_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
-            self.segmentEditorWidget.setMRMLSegmentEditorNode(new_editor_node)
-            
-            segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-            segmentationNode.SetName(f"{self.current_patient_id}_Segmentation")
-            if ct_node:
-                segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(ct_node)
-            
-            self.segmentEditorWidget.setSegmentationNode(segmentationNode)
-            source_node = pt_node if pt_node else ct_node
-            self.segmentEditorWidget.setSourceVolumeNode(source_node)
-            segmentationNode.GetSegmentation().AddEmptySegment("Tumor", "Tumor", [0, 1, 0])
-            
-            self.segmentationCollapsibleButton.collapsed = False
-            self.saveButton.enabled = True
+            self._setupLoadedPatientUI(result[0], result[1], result[2], result[3], result[4])
         else:
             self.patientIdLabel.setText("Active Patient: None")
-            qt.QMessageBox.information(slicer.util.mainWindow(), "Done", "No more untagged patients.")
+            qt.QMessageBox.information(slicer.util.mainWindow(), "Done", "No more untagged patients found.")
 
-    def onSaveClicked(self):
-        """אוספת נתונים, שולחת לשמירה ומנקה את הממשק"""
-        if not self.current_patient_id:
+    def onLoadSpecificClicked(self):
+        target_id = self.specificIdInput.text.strip()
+        if not target_id:
+            qt.QMessageBox.warning(slicer.util.mainWindow(), "Missing ID", "Please enter a Patient ID first.")
             return
 
-        # 1. איסוף נתונים מהטופס
+        base_dicom_dir = self.dicomDirSelector.directory
+        base_info_dir = self.infoDirSelector.directory
+        if not base_dicom_dir or not base_info_dir:
+             qt.QMessageBox.warning(slicer.util.mainWindow(), "Missing Paths", "Please select directories.")
+             return
+
+        result = self.logic.loadSpecificPatient(target_id, base_dicom_dir, base_info_dir)
+        if result:
+            self._setupLoadedPatientUI(result[0], result[1], result[2], result[3], result[4])
+            self.specificIdInput.clear()
+        else:
+            self.patientIdLabel.setText("Active Patient: None")
+            qt.QMessageBox.warning(slicer.util.mainWindow(), "Not Found", f"Could not find DICOM folder for Patient ID: {target_id}")
+
+    def onSaveClicked(self):
+        if not self.current_patient_id: return
+
         clinical_data = {
             "patient_id": self.current_patient_id,
             "height_cm": self.heightInput.value,
@@ -299,7 +378,6 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "notes": self.notesInput.toPlainText()
         }
 
-        # 2. שליחת נתונים ללוגיקה לשמירה
         segmentation_node = self.segmentEditorWidget.segmentationNode()
         success = self.logic.savePatientData(
             self.current_patient_id, 
@@ -315,22 +393,14 @@ class PatientTaggerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Error", "Failed to save data.")
 
     def resetInterface(self):
-        """מנקה את השדות ומכינה את המערכת למטופל הבא"""
         self.current_patient_id = None
-        
-        # איפוס תווית המטופל
         self.patientIdLabel.setText("Active Patient: None")
         self.patientIdLabel.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50; margin: 10px 0px;")
-        
-        # איפוס נתונים קליניים
         self.heightInput.value = 0
         self.weightInput.value = 0
         self.tumorTypeInput.currentIndex = 0
         self.diseaseInput.clear()
         self.notesInput.clear()
-        
-        # סגירת הסגמנטציה וניקוי הסצנה
         self.segmentationCollapsibleButton.collapsed = True
         self.saveButton.enabled = False
         slicer.mrmlScene.Clear(0)
-        print("Interface reset. Ready for next patient.")
