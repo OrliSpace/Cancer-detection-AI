@@ -1,11 +1,13 @@
 """
-DICOM PET/CT Sorting and Filtering Tool
----------------------------------------
-This script processes DICOM data using Sectra XML metadata.
-Fixed version for SLURM / Sectra directory structures.
+DICOM PET/CT Sorting, Filtering and QC-Swapping Tool
+----------------------------------------------------
+This script processes raw DICOM data using Sectra XML metadata,
+organizes them into OB/WB folders, and automatically swaps/archives 
+reconstructions (QC vs NAC/HD) for clinical tagging.
 """
 
 import os
+import shutil
 import xml.etree.ElementTree as ET
 import re
 import argparse
@@ -14,9 +16,8 @@ import pydicom
 from pydicom.uid import generate_uid
 
 # ---------------------------------------------------------
-# Logging - שמרתי על המבנה המקורי והמפורט שלך
+# Logging 
 # ---------------------------------------------------------
-
 LOG_FILE = None
 DEBUG_ENABLED = False
 
@@ -42,13 +43,11 @@ def log_warning(msg):
 # ---------------------------------------------------------
 # Utility
 # ---------------------------------------------------------
-
 def friendly_name(modality, description, number, match_tag=""):
     """Generate a cleaned, filesystem-friendly series name."""
     desc = (description or "UNKNOWN").upper()
     mod_upper = modality.upper()
     
-    # ניקוי כפילויות של Modality בתוך התיאור
     if mod_upper in ["PT", "PET"]:
         desc = re.sub(r'\b(PT|PET)\b', '', desc)
     elif mod_upper == "CT":
@@ -78,7 +77,6 @@ def process_and_save_dicom(src, dst, study_uid, series_uid, series_desc, series_
     try:
         ds = pydicom.dcmread(src)
 
-        # עדכון מטא-דאטה לשמירה על עקביות ב-nnU-Net
         ds.StudyInstanceUID = study_uid
         ds.SeriesInstanceUID = series_uid
         ds.SeriesDescription = series_desc
@@ -147,7 +145,6 @@ def parse_xml(xml_path):
 
         files = []
         for img in series.findall(".//dicom_file/src"):
-            # הפיכת נתיבי ווינדוס ללינוקס
             src = img.text.replace("..\\", "").replace("../", "").replace("\\", os.sep)
             files.append(src)
 
@@ -162,11 +159,11 @@ def parse_xml(xml_path):
     return series_map
 
 # ---------------------------------------------------------
-# PET ↔ CT matching
+# PET <-> CT matching
 # ---------------------------------------------------------
 def match_pet_to_ct(series_map):
     """Filter PET for quality and match to the best diagnostic CT."""
-    log_info("\n===== SMART PET ↔ CT MATCHING =====")
+    log_info("\n===== SMART PET <-> CT MATCHING =====")
 
     ct_series = []
     pet_series = []
@@ -183,7 +180,6 @@ def match_pet_to_ct(series_map):
             return h * 60 + m
         except: return 9999
 
-    # סינון וזיהוי PET הכי טוב (לפי כמות קבצים) לכל סוג
     ob_pets = [p for p in pet_series if any(x in p["description"].upper() for x in ["OB", "ONE BED"])]
     wb_pets = [p for p in pet_series if p not in ob_pets]
 
@@ -224,7 +220,7 @@ def match_pet_to_ct(series_map):
 
 def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
     """Write PET DICOM files with references to their matched CT series."""
-    log_info("\n===== APPLYING PET ↔ CT DICOM REFERENCES =====")
+    log_info("\n===== APPLYING PET <-> CT DICOM REFERENCES =====")
 
     study_folder = os.path.join(output_root, f"Study_{study_uid}")
 
@@ -256,25 +252,74 @@ def apply_pet_ct_references(series_map, output_root, study_uid, match_map):
             log_info(f"Linked: {pet_fname} -> {ct_fname}")
 
 # ---------------------------------------------------------
+# NEW: Clinical Folder Rules (Swaps & Archiving)
+# ---------------------------------------------------------
+def enforce_folder_rules(study_path):
+    """Applies folder swapping (QC vs NAC/HD) and archiving post-processing."""
+    log_info("\n===== ENFORCING CLINICAL FOLDER RULES (SWAPS & ARCHIVE) =====")
+    
+    pt_dir = os.path.join(study_path, "PT")
+    wb_dir = os.path.join(study_path, "WB")
+    ob_dir = os.path.join(study_path, "OB")
+
+    def swap_subfolders(dir_a, prefix_a, dir_b, prefix_b):
+        if not (os.path.exists(dir_a) and os.path.exists(dir_b)):
+            return False
+
+        sub_a = next((d for d in os.listdir(dir_a) if d.startswith(prefix_a)), None)
+        sub_b = next((d for d in os.listdir(dir_b) if d.startswith(prefix_b)), None)
+
+        if sub_a and sub_b:
+            log_info(f" 🔄 Swapping {sub_a} <-> {sub_b}")
+            path_a = os.path.join(dir_a, sub_a)
+            path_b = os.path.join(dir_b, sub_b)
+            
+            # Using standard shutil.move to swap their locations
+            shutil.move(path_a, os.path.join(dir_b, sub_a))
+            shutil.move(path_b, os.path.join(dir_a, sub_b))
+            return True
+        return False
+
+    # 1. Swaps for QC models vs standard NAC/HD
+    swapped_wb = swap_subfolders(wb_dir, "PT_WB_NAC_S", pt_dir, "PT_WB_QC_350_S")
+    swapped_ob = swap_subfolders(ob_dir, "PT_OB_ONE_BED_HD_S", pt_dir, "PT_ONE_BED_QC_S")
+
+    if not swapped_wb and not swapped_ob:
+        log_warning(f" ⚠️ No matching subfolder pairs found for swap in {os.path.basename(study_path)}")
+
+    # 2. Archive unwanted modalities
+    for folder_name in ["CT", "PT", "OT"]:
+        old_path = os.path.join(study_path, folder_name)
+        new_path = os.path.join(study_path, f"{folder_name}_archive")
+        if os.path.exists(old_path):
+            log_info(f" 📁 Archiving {folder_name} to {os.path.basename(new_path)}...")
+            os.rename(old_path, new_path)
+
+
+# ---------------------------------------------------------
 # Main sorting
 # ---------------------------------------------------------
-
+# ---------------------------------------------------------
+# Main sorting
+# ---------------------------------------------------------
 def sort_dicom_from_xml(patient_root, output_root):
     log_info(f"Starting sort for patient folder: {patient_root}")
 
     xml_path = find_xml(patient_root)
-    if xml_path is None: return
+    if xml_path is None: 
+        log_warning(f"Skipping {patient_root} - No XML found.")
+        return
 
-    # התיקון הקריטי למבנה ה-Sectra
     actual_patient_base = os.path.dirname(os.path.dirname(xml_path))
     log_info(f"Detected actual patient base: {actual_patient_base}")
 
     series_map = parse_xml(xml_path)
+    if not series_map:
+        log_warning(f"No series found in XML for {patient_root}")
+        return
 
-    # פריקת ה-Tuple (התיקון לשגיאת ה-items)
     keep_sids, match_map = match_pet_to_ct(series_map)
     
-    # תיוג זוגות ה-OB/WB
     for pet_sid, ct_sid in match_map.items():
         p_desc = series_map[pet_sid]["description"].upper()
         p_type = "OB" if ("ONE BED" in p_desc or "OB" in p_desc) else "WB"
@@ -286,13 +331,11 @@ def sort_dicom_from_xml(patient_root, output_root):
 
     total_processed = 0
 
-    # עיבוד כל הסדרות (כולל אלו שלא ב-match_map - לפי בקשתך)
     for sid, data in series_map.items():
         modality = data["modality"].upper()
         match_tag = data.get("match_tag", "")
         fname = friendly_name(modality, data["description"], data["number"], match_tag)
 
-        # קביעת תיקייה: OB/WB לזוגות, או לפי המודליטי לשאר
         mod_folder = match_tag if match_tag else modality
         out_dir = os.path.join(output_root, f"Study_{study_uid}", mod_folder, fname)
         os.makedirs(out_dir, exist_ok=True)
@@ -308,7 +351,6 @@ def sort_dicom_from_xml(patient_root, output_root):
                 if process_and_save_dicom(src, dst, study_uid, series_uid, fname, data["number"], modality):
                     total_processed += 1
             else:
-                # ניסיון חילוץ נוסף
                 alt_src = os.path.join(actual_patient_base, "DICOM", os.path.basename(rel_path))
                 if os.path.exists(alt_src):
                     process_and_save_dicom(alt_src, dst, study_uid, series_uid, fname, data["number"], modality)
@@ -317,20 +359,53 @@ def sort_dicom_from_xml(patient_root, output_root):
                     log_warning(f"Missing: {src}")
 
     apply_pet_ct_references(series_map, output_root, study_uid, match_map)
-    log_info(f"\n===== SUMMARY =====")
+    
+    # הפעלת לוגיקת הארכיון וההחלפות על תיקיית החולה הספציפי שסיימנו ליצור
+    study_path = os.path.join(output_root, f"Study_{study_uid}")
+    enforce_folder_rules(study_path)
+
+    log_info(f"\n===== SUMMARY FOR {os.path.basename(patient_root)} =====")
     log_info(f"Total Slices Processed: {total_processed}")
 
+# ---------------------------------------------------------
+# Batch Processing Wrapper
+# ---------------------------------------------------------
+def process_all_patients(base_input, base_output):
+    """Iterates over all patient folders in the base directory."""
+    if not os.path.isdir(base_input):
+        log_error(f"Input directory does not exist: {base_input}")
+        return
+
+    # מוצא את כל התיקיות בתוך תיקיית האם
+    patient_dirs = [d for d in os.listdir(base_input) if os.path.isdir(os.path.join(base_input, d))]
+    log_info(f"Found {len(patient_dirs)} patient folders to process in {base_input}")
+
+    for p_dir in patient_dirs:
+        input_patient_path = os.path.join(base_input, p_dir)
+        output_patient_path = os.path.join(base_output, p_dir)
+        
+        log_info(f"\n" + "="*60)
+        log_info(f"🚀 STARTING PATIENT: {p_dir}")
+        log_info(f"="*60)
+        
+        os.makedirs(output_patient_path, exist_ok=True)
+        sort_dicom_from_xml(input_patient_path, output_patient_path)
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input_folder")
-    parser.add_argument("output_folder")
-    parser.add_argument("--debug", action="store_true")
+    parser = argparse.ArgumentParser(description="Batch Process Raw Sectra DICOMs")
+    parser.add_argument("input_folder", help="Base directory containing multiple raw patient folders")
+    parser.add_argument("output_folder", help="Base directory where processed patients will be saved")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
     DEBUG_ENABLED = args.debug
     os.makedirs(args.output_folder, exist_ok=True)
-    log_path = os.path.join(args.output_folder, f"sort_log_{datetime.now().strftime('%H%M%S')}.txt")
+    
+    log_path = os.path.join(args.output_folder, f"batch_sort_log_{datetime.now().strftime('%H%M%S')}.txt")
     LOG_FILE = open(log_path, "w", encoding="utf-8")
 
-    sort_dicom_from_xml(args.input_folder, args.output_folder)
+    # קריאה למעטפת הריצה (Batch)
+    process_all_patients(args.input_folder, args.output_folder)
+    
+    log_info("\n✅ ALL PATIENTS PROCESSED SUCCESSFULLY!")
     LOG_FILE.close()
